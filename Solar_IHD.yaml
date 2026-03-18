@@ -1,0 +1,767 @@
+substitutions:
+# home assistant sensors
+  PV_flow_sensor:  "sensor.sigen_inverter_pv_power" #"input_number.pv_test" 
+  flow_sensor_unit: 1000 # 1000 if supplier in kWh
+
+
+# system parameters
+  PV_Max_Power: 5520 # rated PV capacity in watts, used for guage and flow animation
+  inverter_max_power: 5000 # inverter power in watts,, used for guage and flow animation for grid and home usage
+
+# needle time to change:
+  needle_spd: 3000 #ms
+
+#color maps
+  PV_color_map: [0xfff33b, 0xfdc70c, 0xf3903f, 0xed683c, 0xe93e3a]
+  load_color_map: [0x378f11, 0xa8b23d, 0xffd47e, 0xf38742, 0xde1136]
+  grid_color_map:  [0x009800, 0x269826, 0x4c984c, 0x729872, 0x989898, 0x987272, 0x984c4c, 0x982626, 0x980000]  # green to grey to red 
+  color_background: 0x222222
+  color_text: 0x989898
+
+esphome:
+  name: esphome-web-6c3b64
+  friendly_name: Solar In Home
+  min_version: 2025.9.0
+  name_add_mac_suffix: false
+
+esp32:
+  variant: esp32
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+
+# Allow Over-The-Air updates
+ota:
+- platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+##############################
+
+# ============================================================ 
+# Home Assistant related setup
+#
+light:
+  - platform: monochromatic
+    output: backlight_pwm
+    name: Display Backlight
+    id: backlight
+    restore_mode: ALWAYS_ON
+
+# ============================================================ 
+# Hardware related setup
+#
+# Setup SPI for the display. The ESP32-2432S028R uses separate SPI buses for display and touch
+spi:
+  - id: tft
+    clk_pin: GPIO14
+    mosi_pin: GPIO13
+    miso_pin: GPIO12
+  - id: touch
+    clk_pin: GPIO25
+    mosi_pin: GPIO32
+    miso_pin: GPIO39
+
+# Setup a pin to control the backlight
+output:
+  - platform: ledc
+    pin: GPIO21
+    id: backlight_pwm
+
+# Setup the ili9xxx platform
+display:
+    id: main_display
+    platform: mipi_spi
+    model: ESP32-2432S028
+    spi_id: tft
+    cs_pin: GPIO15
+    dc_pin: GPIO2
+    rotation: 90
+    invert_colors: false
+
+# Set up the xpt2046 touch platform
+touchscreen:
+  platform: xpt2046
+  id: my_touch
+  spi_id: touch
+  cs_pin: GPIO33
+  interrupt_pin: GPIO36
+  update_interval: 50ms
+  threshold: 400
+  calibration:
+    x_min: 280
+    x_max: 3860
+    y_min: 340
+    y_max: 3860
+  transform:
+    swap_xy: true
+
+font:
+  - file: "fonts/MaterialDesignIconsDesktop.ttf" 
+    id: battery_icons_40
+    size: 40
+    bpp: 4
+    glyphs: [
+      "\U000F007A", # mdi-battery-10
+      "\U000F007B", # mdi-battery-20
+      "\U000F007C", # mdi-battery-30
+      "\U000F007D", # mdi-battery-40
+      "\U000F007E", # mdi-battery-50
+      "\U000F007F", # mdi-battery-60
+      "\U000F0080", # mdi-battery-70
+      "\U000F0081", # mdi-battery-80
+      "\U000F0082", # mdi-battery-90
+      "\U000F0079", # mdi-battery (full)
+      "\U000F008E", # mdi-battery-outline
+      "\U000F0091", # mdi-battery-unknown
+      "\U000F0056", # mdi-arrow-right-bold-circle
+      "\U000f004f", # mdi-arrow-left-bold-circle
+      "\U000f03e5", # mdi-pause-circle
+      "\U000f0047", # mdi-arrow-down-bold-circle
+      "\U000f0599", # sun
+      "\U000f0f9c", #home arrow in
+      ]
+  - file: "fonts/MaterialDesignIconsDesktop.ttf" 
+    id: battery_icons_36
+    size: 36
+    bpp: 4
+    glyphs: [
+      "\U000f0d3e" # pylon
+      ]
+globals:
+    - id: solar_color
+      type: int
+      restore_value: no
+      initial_value: '0x00'
+    - id: grid_color
+      type: int
+      restore_value: no
+      initial_value: '0x00'
+
+
+# -------- Home Assistant Sensors --------
+sensor:
+  - platform: homeassistant # SENSOR and updates for Battery SOC %
+    entity_id: sensor.sigen_inverter_battery_state_of_charge
+    id: battery_soc
+    on_value:
+      - lvgl.label.update:
+          id: batt_pv_text
+          text:
+            format: "%.1f%%"
+            args: [ 'x' ]
+      - lvgl.label.update:
+          id: lbl_battery_status
+          text: !lambda |-
+            static char buf[10];
+            std::string icon;
+            if (x == 100.0) {
+                icon = "\U000F0079"; // mdi-battery (full)
+            } else if (x > 90) {
+                icon = "\U000F0082"; // mdi-battery-90
+            } else if (x > 80) {
+                icon = "\U000F0081"; // mdi-battery-80
+            } else if (x > 70) {
+                icon = "\U000F0080"; // mdi-battery-70
+            } else if (x > 60) {
+                icon = "\U000F007F"; // mdi-battery-60
+            } else if (x > 50) {
+                icon = "\U000F007E"; // mdi-battery-50
+            } else if (x > 40) {
+                icon = "\U000F007D"; // mdi-battery-40
+            } else if (x > 30) {
+                icon = "\U000F007C"; // mdi-battery-30
+            } else if (x > 20) {
+                icon = "\U000F007B"; // mdi-battery-20
+            } else if (x > 10) {
+                icon = "\U000F007A"; // mdi-battery-10
+            } else if (x > 0) {
+                icon = "\U000F008E"; // mdi-battery-outline
+            } else {
+                icon = "\U000F0091"; // mdi-battery-unknown
+            }
+            snprintf(buf, sizeof(buf), "%s", icon.c_str());
+            return buf;
+
+  - platform: homeassistant # sensor for PV power
+    entity_id: ${PV_flow_sensor}
+    id: pv_power
+    on_value:
+      # - lvgl.indicator.update:
+      #     id: pv_flow_needle
+      #     value: !lambda return x * ${flow_sensor_unit};
+      - lvgl.label.update:
+          id: pv_flow_text
+          text:
+            format: "now: %.2fkW"
+            args: [ 'x' ]
+      - lvgl.label.update:
+          id: lbl_sun_icon
+          text_color: !lambda |-
+            int colmap[5] =  { ${PV_color_map[0]}, ${PV_color_map[1]}, ${PV_color_map[2]}, ${PV_color_map[3]}, ${PV_color_map[4]} };
+            int col_indx = x / ${(PV_Max_Power/flow_sensor_unit) /5};
+            if (col_indx > 4) {col_indx=4;}
+            if (col_indx < 0) {col_indx=0;}
+            if (x == 0.0) {
+                 id(solar_color)= 0xa9a9a9; // grey
+            } else  {
+                 id(solar_color) = colmap[col_indx]; 
+            } 
+            return lv_color_hex(id(solar_color));
+      - lvgl.obj.update:
+          id: flow_dot_solar
+          bg_color: !lambda |-
+            ESP_LOGD("pid","sol_col %d", id(solar_color));
+            return lv_color_hex(id(solar_color));
+
+  - platform: homeassistant # sensor for PV power - move the needle slowly
+    entity_id: ${PV_flow_sensor}
+    id: pv_power_gently
+    filters: 
+      - heartbeat: 100ms
+      - lambda:  !lambda |-
+          static float last_pos = 0;
+          static float target = 0;
+          static float origin = 0;
+          static long time_changed = 0;
+          if (id(pv_power).state != target) {
+            time_changed=millis();
+            origin=last_pos;
+            target=id(pv_power).state;
+            //ESP_LOGD("pid","NEW TARGET: ++++++++++++++++++  origin %.1f target %.1f", origin, target);
+          }
+          else {
+            float timedelta = clamp((int)(millis()-time_changed),0,${needle_spd}) / ${needle_spd}.0;
+            last_pos = origin + ( timedelta * (float)(target-origin));
+            ESP_LOGD("pid","origin %.1f target %.1f timedelta %.1f last_pos %d.1f ", origin, target, timedelta, last_pos);
+          }
+          return last_pos;
+    on_value:
+      - lvgl.indicator.update:
+          id: pv_flow_needle
+          value: !lambda return x * ${flow_sensor_unit};
+
+
+
+  - platform: homeassistant # sensor for PV total
+    entity_id: sensor.sigen_inverter_daily_pv_energy
+    id: pv_total
+    on_value:
+      - lvgl.label.update:
+          id: pv_total_text
+          text:
+            format: "today: %.1fkWh"
+            args: [ 'x' ]
+
+  - platform: homeassistant # sensor for grid flow
+    entity_id: sensor.sigen_plant_grid_active_power
+    id: grid_power
+    on_value:
+      - lvgl.indicator.update:
+          id: grid_flow_needle
+          value: !lambda return x * 1000;
+      - lvgl.label.update:
+          id: grid_flow_text
+          text:
+            format: "%.2fkW"
+            args: [ 'x' ]
+      - lvgl.label.update:
+          id: lbl_pylon_icon
+          text_color: !lambda |-
+            int colmap[9] =  { ${grid_color_map[0]}, ${grid_color_map[1]}, ${grid_color_map[2]}, ${grid_color_map[3]}, ${grid_color_map[4]} , ${grid_color_map[5]} , ${grid_color_map[6]} , ${grid_color_map[7]} , ${grid_color_map[8]} };
+            int col_indx = ( x + ${ (inverter_max_power/flow_sensor_unit) } ) / ${(2 * inverter_max_power/flow_sensor_unit) /9};
+            if (col_indx > 9) {col_indx=9;}
+            if (col_indx < 0) {col_indx=0;}
+
+            id(grid_color) = colmap[col_indx]; 
+          
+            return lv_color_hex(id(grid_color));
+      - lvgl.obj.update:
+          id: flow_dot_grid
+          bg_color: !lambda return lv_color_hex(id(grid_color)); 
+
+  - platform: homeassistant # sensor for load
+    entity_id: sensor.sigen_plant_consumed_power
+    id: load_power
+    on_value:
+      - lvgl.indicator.update:
+          id: load_flow_needle
+          value: !lambda return x * 1000;
+      - lvgl.label.update:
+          id: load_flow_text
+          text:
+            format: "%.2fkW"
+            args: [ 'x' ]
+      - lvgl.label.update:
+          id: lbl_home_icon
+          text_color: !lambda |-
+            int colmap[5] =  { ${load_color_map[0]}, ${load_color_map[1]}, ${load_color_map[2]}, ${load_color_map[3]}, ${load_color_map[4]} };
+            int col_indx = clamp( (int)(x  / ${( inverter_max_power/flow_sensor_unit) /5}),0,4);
+            //if (col_indx > 4) {col_indx=4;}
+            //if (col_indx < 0) {col_indx=0;}
+            return lv_color_hex(colmap[col_indx]);
+
+  - platform: homeassistant # SENSOR & UPDATES FOR ---  Battery Flow
+    entity_id: sensor.sigen_inverter_battery_power
+    id: battery_power
+    on_value: 
+      - lvgl.bar.update:
+          id: bar_battery_flow
+          value: !lambda |-
+            if (x < 000) { return 2000 ;}
+            else { return (x * 1000) + 2000; }     
+          mode: range
+          start_value: !lambda |-
+            if (x > 000) { return 2000 ;}
+            else { return (x * 1000) + 2000; }   
+
+  - platform: homeassistant # battery flow calc to smooth erratic data 
+    entity_id: sensor.sigen_inverter_battery_power
+    id: battery_flow_calc
+    filters:
+      - lambda:  !lambda |-
+          static float l10data[10] = {0,0,0,0,0,0,0,0,0,0};
+          static long l10time[10] = {0,0,0,0,0,0,0,0,0,0};
+          // build the array
+          for (int i=1; i<=9; i++) {
+          
+            l10data[i-1] = l10data[i];
+            l10time[i-1] = l10time[i];
+          }
+          l10data[9]=x;
+          l10time[9]=millis(); // id(battery_power).update_interval
+
+          float counter=0;
+          long min_time=0;
+          //work out the average
+          for (int i=9; i>=1 && l10time[i-1]>0; i-- ) {
+            min_time=l10time[i-1];
+            counter += l10data[i-1]*(l10time[i]-l10time[i-1]); 
+          }
+
+          return  counter / (l10time[9]-min_time);
+    on_value: 
+      - lvgl.bar.update:
+          id: bar_battery_flow_average
+          value: !lambda |-
+            if (x < 000) { return 2000 ;}
+            else { return (x * 1000) + 2000; }     
+          mode: range
+          start_value: !lambda |-
+            if (x > 000) { return 2000 ;}
+            else { return (x * 1000) + 2000; } 
+      - lvgl.label.update:
+          id: lbl_battery_flow
+          text: !lambda |-
+            static char buf[30];
+            std::string icon;
+            if (x == 0.0) {
+               snprintf(buf, sizeof(buf), "idle"); 
+            } else if (x < 0) {
+              snprintf(buf, sizeof(buf), "discharging %.2f kW", x); 
+            }  else {
+              snprintf(buf, sizeof(buf), "charging %.2f kW", x); 
+            }
+            return buf;
+  
+  - platform: uptime # little animated dots
+    type: seconds
+    id: ticker
+    update_interval: 100ms
+    on_value:
+      - lvgl.obj.update: # update solar dot position
+          id: flow_dot_solar
+          y: !lambda |-
+            static float last_pos = 0.0;
+            static float last_time = 0.0;
+            float time=x;  // x is the varible apssed in the the function by the lambda, not the 'x' co-ordiante
+            float speed= ( (id(pv_power).state > 0) ? id(pv_power).state : 0) * 10 * ${flow_sensor_unit} / (float)${PV_Max_Power} ; // 0 to 10 aligned to max power 
+            float pos_delta = (time-last_time) * 10.0 * speed *0.6;
+            float pos = ((last_pos + pos_delta) > 42.0) ? 0.0 : (last_pos + pos_delta) ;
+            // ESP_LOGD("pid","time: %.2f speed: %.2f delta %.2f last_pos %.1f pos %.1f",time,speed,pos_delta,last_pos,pos );
+            last_time = time;
+            last_pos = pos;
+            int ret = pos + 90;
+            return ret;
+      - lvgl.obj.update: 
+          id: flow_dot_grid
+          x: !lambda |-           
+            static float last_grid_pos = 0;
+            static float last_grid_time = 0;
+            float grid_time=x;   // x is the varible apssed in the the function by the lambda, not the 'x' co-ordiante
+            float grid_speed= ( (id(grid_power).state > -999) ? id(grid_power).state : 0) * 10 * ${flow_sensor_unit} / (float)${PV_Max_Power} ; // 0 to 10 aligned to max power 
+            float grid_pos_delta = (grid_time-last_grid_time) * 10.0 * grid_speed *0.6;
+            float grid_pos = (last_grid_pos + grid_pos_delta);
+            if (grid_pos > 21) {grid_pos= -21;} 
+            if (grid_pos < -21) {grid_pos = 21;} 
+            // ESP_LOGD("pid","grid.... time: %.2f speed: %.2f delta %.2f last_pos %d pos %d",grid_time,grid_speed,grid_pos_delta,last_grid_pos,grid_pos );
+            last_grid_time = grid_time;
+            last_grid_pos = grid_pos;
+            int ret = grid_pos + 109;
+            return ret;
+
+
+### Format of shared components        
+.label: &label_common
+  bg_color: 0x222222
+  bg_opa: 0
+  width: 80
+  height: 20
+  text_font: montserrat_14
+  text_color: 0xa9a9a9
+  text_align: center
+  text: ""
+
+.needle: &needle_common
+  width: 2
+  color: 0xa9a9a9
+  
+
+# -------- LVGL UI --------
+lvgl:
+  displays:
+    - main_display
+
+  # touchscreens: 
+  #   - my_touch
+  #       on_touch:
+  #         lvgl.page.next: {direction: forward}
+
+  pages:
+    # ======================================================
+    #  SCREEN 1 : LIVE DATA GAUGES + NUMERIC LABELS
+    # ======================================================
+    - id: screen_current
+      bg_color: !lambda return lv_color_hex(0x222222);
+      widgets:
+
+      - meter: # object for the grid flow meter
+          id: gauge_grid_flow
+          x: 6
+          y: 80
+          width: 80
+          height: 80
+          bg_opa: transp
+          border_opa: transp # color: 0x555555
+          scales:
+          - range_from: -4000
+            range_to: 4000
+            angle_range: 240 # sets the total angle to 180 = starts mid left and ends mid right
+            rotation: 150
+            ticks:
+              count: 13
+              color: 0x555555
+              width: 1
+            indicators:
+              - line:
+                  id: grid_flow_needle
+                  <<: *needle_common
+              - arc: # first half of the scale background {0xfff33b, 0xfdc70c, 0xf3903f, 0xed683c, 0xe93e3a }
+                  color: ${grid_color_map[0]}
+                  r_mod: 10 # radius difference from the scale default radius
+                  width: 15
+                  start_value: -4000
+                  end_value: -3000
+              - arc: # second half of the scale background
+                  color: ${grid_color_map[1]}
+                  r_mod: 10
+                  width: 15
+                  start_value: -3000
+                  end_value: -2000
+              - arc: # second half of the scale background
+                  color: ${grid_color_map[2]}
+                  r_mod: 10
+                  width: 15
+                  start_value: -2000
+                  end_value: -1000
+              - arc: # second half of the scale background
+                  color:  ${grid_color_map[3]}
+                  r_mod: 10
+                  width: 15
+                  start_value: -1000
+                  end_value: 0
+              - arc: # second half of the scale background
+                  color:  ${grid_color_map[4]}
+                  r_mod: 10
+                  width: 15
+                  start_value: 000
+                  end_value: 1000
+              - arc: # second half of the scale background
+                  color:  ${grid_color_map[5]}
+                  r_mod: 10
+                  width: 15
+                  start_value: 1000
+                  end_value: 2000
+              - arc: # second half of the scale background
+                  color:  ${grid_color_map[6]}
+                  r_mod: 10
+                  width: 15
+                  start_value: 2000
+                  end_value: 3000
+              - arc: # second half of the scale background
+                  color:  ${grid_color_map[7]}
+                  r_mod: 10
+                  width: 15
+                  start_value: 3000
+                  end_value: 4000
+      - label: # pylon icon
+          id: lbl_pylon_icon
+          align: TOP_LEFT
+          y: 120
+          x: 26
+          width: 40
+          height: 40
+          text_font: battery_icons_36
+          text_color: !lambda return lv_color_hex(0x989898); 
+          text: "\U000f0d3e" # pylon
+      - label: # grid flow numeric indicator
+          id: grid_flow_text
+          <<: *label_common
+          y: 160
+          x: 5
+
+      - obj: # flow dot for grid
+          id: flow_dot_grid
+          x: 80
+          y: 120
+          width: 4
+          height: 4
+          bg_color: 0xffffff
+          border_opa: transp
+
+      - meter: # object for the load flow meter
+          id: gauge_load_flow
+          x: 234
+          y: 80
+          width: 80
+          height: 80
+          bg_opa: transp
+          border_opa: transp # color: 0x555555
+          scales:
+          - range_from: -0000
+            range_to: 5000
+            angle_range: 240 # sets the total angle to 180 = starts mid left and ends mid right
+            rotation: 150
+            ticks:
+              count: 13
+              color: 0x555555
+              width: 1
+            indicators:
+              - line:
+                  id: load_flow_needle
+                  width: 2
+                  color: 0xa9a9a9
+              - arc: # first half of the scale background {0xfff33b, 0xfdc70c, 0xf3903f, 0xed683c, 0xe93e3a }
+                  color: ${load_color_map[0]}
+                  r_mod: 10 # radius difference from the scale default radius
+                  width: 15
+                  start_value: 0
+                  end_value: ${inverter_max_power/5*1}
+              - arc: # second half of the scale background
+                  color: ${load_color_map[1]}
+                  r_mod: 10
+                  width: 15
+                  start_value: ${inverter_max_power/5*1}
+                  end_value: ${inverter_max_power/5*2}
+              - arc: # second half of the scale background
+                  color: ${load_color_map[2]}
+                  r_mod: 10
+                  width: 15
+                  start_value: ${inverter_max_power/5*2}
+                  end_value: ${inverter_max_power/5*3}
+              - arc: # second half of the scale background
+                  color:  ${load_color_map[3]}
+                  r_mod: 10
+                  width: 15
+                  start_value: ${inverter_max_power/5*3}
+                  end_value: ${inverter_max_power/5*4}
+              - arc: # second half of the scale background
+                  color: ${load_color_map[4]}
+                  r_mod: 10
+                  width: 15
+                  start_value: ${inverter_max_power/5*4}
+                  end_value: ${inverter_max_power/5*5}
+
+      - label: # load flow numeric indicator
+          id: load_flow_text
+          <<: *label_common
+          y: 160
+          x: 235
+      - label: # home icon
+          id: lbl_home_icon
+          align: TOP_LEFT
+          y: 120
+          x: 254
+          width: 40
+          height: 40
+          text_font: battery_icons_40
+          text_color: !lambda return lv_color_hex(0x989898); 
+          text: "\U000f0f9c" #home arrow in      
+
+      - meter: # object for the PV flow meter
+          id: gauge_pv_flow
+          x: 110
+          y: 15
+          width: 100
+          height: 100
+          bg_opa: transp
+          border_opa: transp # color: 0x555555
+          scales:
+          - range_from: 0000
+            range_to: ${PV_Max_Power}
+            angle_range: 240 # sets the total angle to 180 = starts mid left and ends mid right
+            rotation: 150
+            ticks:
+              count: 13
+              color: 0x555555
+              width: 1
+            indicators:
+              - line:
+                  id: pv_flow_needle
+                  width: 2
+                  color: 0xa9a9a9
+              - arc: # first half of the scale background {0xfff33b, 0xfdc70c, 0xf3903f, 0xed683c, 0xe93e3a }
+                  color: 0xfff33b
+                  r_mod: 10 # radius difference from the scale default radius
+                  width: 20
+                  start_value: 0
+                  end_value: ${PV_Max_Power / 5}
+              - arc: # second half of the scale background
+                  color: 0xfdc70c
+                  r_mod: 10
+                  width: 20
+                  start_value: ${PV_Max_Power / 5}
+                  end_value: ${PV_Max_Power * 2 / 5}
+              - arc: # second half of the scale background
+                  color: 0xf3903f
+                  r_mod: 10
+                  width: 20
+                  start_value: ${PV_Max_Power * 2 / 5}
+                  end_value: ${PV_Max_Power * 3 / 5}
+              - arc: # second half of the scale background
+                  color:  0xed683c
+                  r_mod: 10
+                  width: 20
+                  start_value: ${PV_Max_Power * 3 / 5}
+                  end_value: ${PV_Max_Power * 4 / 5}
+              - arc: # second half of the scale background
+                  color: 0xe93e3a
+                  r_mod: 10
+                  width: 20
+                  start_value: ${PV_Max_Power * 4 / 5}
+                  end_value: ${PV_Max_Power}
+      - label: # PV flow numeric indicator
+          id: pv_flow_text
+          <<: *label_common
+          width: 120
+          y: 15
+          x: 10
+      - label: # PV total numeric indicator
+          id: pv_total_text
+          <<: *label_common
+          width: 120
+          y: 15
+          x: 200
+          text: "total"
+
+
+      - label: # sun icon
+          id: lbl_sun_icon
+          align: TOP_LEFT
+          y: 48
+          x: 140
+          width: 40
+          height: 40
+          text_font: battery_icons_40
+          text_color: !lambda return lv_color_hex(0x989898); 
+          text: "\U000f0599" # sun
+
+      - obj: # flow dot solar
+          id: flow_dot_solar
+          x: 158
+          y: 90
+          width: 4
+          height: 4
+          bg_color: 0xffffff
+          border_opa: transp
+          border_width: 0
+           
+      - label: # object for the battery SOC meter
+          id: lbl_battery_status
+          align: top_left
+          y: 120 
+          x: 180 
+          width: 40
+          height: 40
+          #border_color: 0xffffff
+          #border_width: 1
+          transform_angle: 90
+          text_font: battery_icons_40
+          text_color: !lambda return lv_color_hex(0xa9a9a9);
+          text_align: center
+          text: "\U000F0091" # start with mdi-battery-unknown
+      - label: # gauge numeric indicator
+          id: batt_pv_text
+          text_font: montserrat_14
+          align: top_left
+          x: 120
+          y: 160
+          width: 80
+          height: 20
+          text_align: center
+          text_color: !lambda return lv_color_hex(0xa9a9a9);
+          #width: 70
+          text: "?%"
+
+      - obj: #obj for the battery flow data
+            height: 50
+            width: 160
+            align: CENTER
+            y: 85
+            bg_opa: transp
+            border_width: 0
+            pad_all: 0
+            widgets:
+            - label:
+                id: lbl_battery_flow
+                align: top_mid
+                text: "idle"
+                text_color: !lambda return lv_color_hex(0xa9a9a9);
+            - bar:
+                id: bar_battery_flow
+                align: bottom_mid
+                y: -13
+                width: 130
+                height: 20
+                min_value: 0
+                max_value: 4000
+                start_value: 1000
+                value: 2000
+                mode: range
+                bg_color: !lambda return lv_color_hex(0x989898);
+                indicator:
+                  bg_color:  !lambda return lv_color_hex(0x989090);
+                  height: 4
+            - bar:
+                id: bar_battery_flow_average
+                align: bottom_mid
+                y: -18
+                width: 130
+                height: 10
+                min_value: 0
+                max_value: 4000
+                start_value: 1000
+                value: 2000
+                mode: range
+                bg_opa: 0
+                indicator:
+                  bg_color:  !lambda return lv_color_hex(0x980000);
+                  height: 2
+
